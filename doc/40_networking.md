@@ -251,3 +251,48 @@ auto make_tls_client_task = [&]() -> coro::task<void> {
 
 libcoro's TLS/SSL support, combined with its asynchronous capabilities, empowers you to build secure and efficient network applications in C++.
 
+
+### 4.5 DNS Resolution
+
+Libcoro provides asynchronous DNS resolution capabilities through the `coro::net::dns::resolver` class. This class allows resolving hostnames to IP addresses without blocking the execution of your coroutines.
+
+#### 4.5.1 `coro::net::dns::resolver<Executor>`
+
+The `coro::net::dns::resolver` class is a template class that requires an executor type to be specified. The executor will handle the execution of the DNS resolution task. This allows for flexibility in choosing the execution context for DNS resolution, such as a thread pool or an I/O scheduler.
+
+**Key features:**
+
+- **Constructor:** 
+    - Requires a shared pointer to an executor instance (e.g., `coro::thread_pool` or `coro::io_scheduler`).
+    - Optionally accepts a timeout value for the DNS resolution operation (defaults to 5 seconds).
+- **`host_by_name()`:** Initiates an asynchronous DNS resolution for the provided hostname. Returns a `coro::task` that yields a `std::unique_ptr<coro::net::dns::result>`. The `result` object contains information about the resolution status and resolved IP addresses.
+
+**Example usage:**
+
+```cpp
+auto scheduler = std::make_shared<coro::io_scheduler>();
+coro::net::dns::resolver<coro::io_scheduler> resolver{scheduler};
+
+auto make_resolution_task = [&](coro::net::hostname hostname) -> coro::task<void> {
+    co_await scheduler->schedule();
+    auto result = co_await resolver.host_by_name(hostname);
+
+    if (result->status() == coro::net::dns::status::complete) {
+        for (const auto& ip_address : result->ip_addresses()) {
+            std::cout << ip_address.to_string() << std::endl;
+        }
+    } else {
+        std::cerr << "DNS resolution failed: " 
+                  << coro::net::dns::to_string(result->status()) << std::endl;
+    }
+    co_return;
+};
+
+// Resolve "www.example.com"
+coro::sync_wait(make_resolution_task("www.example.com"));
+```
+
+This example demonstrates how to use the `coro::net::dns::resolver` to asynchronously resolve a hostname. The `make_resolution_task` coroutine schedules itself on the I/O scheduler and then awaits the result of the DNS resolution. The resolved IP addresses are printed if the resolution is successful.
+
+By using the `coro::net::dns::resolver`, you can integrate DNS resolution seamlessly into your asynchronous networking code, avoiding blocking operations and allowing for efficient utilization of resources.
+
