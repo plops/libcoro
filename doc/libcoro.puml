@@ -1,0 +1,330 @@
+@startuml
+namespace coro {
+    class thread_pool {
+        - options m_opts
+        - std::vector<std::jthread> m_threads
+        - std::atomic<bool> m_shutdown_requested
+        - std::deque<std::coroutine_handle<>> m_queue
+        - std::atomic<uint64_t> m_size
+        - std::mutex m_wait_mutex
+        - std::condition_variable m_wait_cv
+        + thread_pool(options opts)
+        + ~thread_pool()
+        + operation schedule()
+        + void resume(std::coroutine_handle<> handle)
+        + void shutdown()
+        - void executor(std::size_t idx)
+        - void schedule_impl(std::coroutine_handle<> handle)
+    }
+    class thread_pool::operation {
+        - thread_pool& m_thread_pool
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + operation(thread_pool& tp)
+        + void await_suspend(std::coroutine_handle<> awaiting_coroutine)
+    }
+    thread_pool +-- thread_pool::operation
+    class semaphore {
+        - std::ptrdiff_t m_least_max_value
+        - std::atomic<std::ptrdiff_t> m_counter
+        - std::atomic<bool> m_notify_all_set
+        - acquire_operation* m_acquire_waiters
+        - std::mutex m_waiter_mutex
+        + semaphore(std::ptrdiff_t least_max_value_and_starting_value)
+        + semaphore(std::ptrdiff_t least_max_value, std::ptrdiff_t starting_value)
+        + ~semaphore()
+        + acquire_operation acquire()
+        + void release()
+        - bool try_acquire()
+        - void notify_waiters()
+    }
+    class semaphore::acquire_operation {
+        - semaphore& m_semaphore
+        - acquire_operation* m_next
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + acquire_operation(semaphore& s)
+        + bool await_ready()
+        + bool await_suspend(std::coroutine_handle<> awaiting_coroutine)
+        + acquire_result await_resume()
+    }
+    semaphore +-- semaphore::acquire_operation
+    class event {
+        - std::atomic<void*> m_state
+        + event(bool initially_set = false)
+        + void set(resume_order_policy policy = resume_order_policy::lifo)
+        + void reset()
+        - awaiter* reverse(awaiter* curr)
+    }
+    class event::awaiter {
+        - event& m_event
+        - awaiter* m_next
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + awaiter(event& e)
+        + bool await_suspend(std::coroutine_handle<> awaiting_coroutine)
+    }
+    event +-- event::awaiter
+    class mutex {
+        - void* unlocked_value()
+        - std::atomic<void*> m_state
+        - lock_operation* m_internal_waiters
+        + mutex()
+        + lock_operation lock()
+        + bool try_lock()
+        + void unlock()
+    }
+    class mutex::lock_operation {
+        - mutex& m_mutex
+        - lock_operation* m_next
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + lock_operation(mutex& m)
+        + bool await_ready()
+        + bool await_suspend(std::coroutine_handle<> awaiting_coroutine)
+    }
+    mutex +-- mutex::lock_operation
+    class shared_mutex {
+        - std::shared_ptr<executor> m_executor
+        - void* unlocked_value()
+        - std::atomic<void*> m_state
+        - lock_operation* m_internal_waiters
+        - shared_lock_operation* m_internal_shared_waiters
+        + shared_mutex(std::shared_ptr<executor> e)
+        + lock_operation lock()
+        + shared_lock_operation lock_shared()
+        + bool try_lock()
+        + bool try_lock_shared()
+        + void unlock()
+        + void unlock_shared()
+    }
+    class shared_mutex::lock_operation {
+        - shared_mutex& m_mutex
+        - lock_operation* m_next
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + lock_operation(shared_mutex& m)
+        + bool await_ready()
+        + bool await_suspend(std::coroutine_handle<> awaiting_coroutine)
+    }
+    shared_mutex +-- shared_mutex::lock_operation
+    class shared_mutex::shared_lock_operation {
+        - shared_mutex& m_mutex
+        - shared_lock_operation* m_next
+        - std::coroutine_handle<> m_awaiting_coroutine
+        + shared_lock_operation(shared_mutex& m)
+        + bool await_ready()
+        + bool await_suspend(std::coroutine_handle<> awaiting_coroutine)
+    }
+    shared_mutex +-- shared_mutex::shared_lock_operation
+    class io_scheduler {
+        - options m_opts
+        - thread_pool::options m_pool
+        - const void* m_shutdown_ptr
+        - const void* m_timer_ptr
+        - const void* m_schedule_ptr
+        - std::atomic<bool> m_io_processing
+        - std::atomic<bool> m_shutdown_requested
+        - int m_epoll_fd
+        - int m_shutdown_fd
+        - int m_timer_fd
+        - int m_schedule_fd
+        - std::atomic<uint64_t> m_size
+        - std::thread m_io_thread
+        - std::vector<epoll_event> m_events
+        - std::vector<std::coroutine_handle<>> m_handles_to_resume
+        - timed_events m_timed_events
+        - std::mutex m_timed_events_mutex
+        - std::vector<std::coroutine_handle<>> m_scheduled_tasks
+        - std::mutex m_scheduled_tasks_mutex
+        - std::unique_ptr<thread_pool> m_thread_pool
+        - std::chrono::milliseconds m_default_timeout
+        - bool m_schedule_fd_triggered
+        - void* m_owned_tasks
+        + io_scheduler(options opts)
+        + ~io_scheduler()
+        + std::size_t process_events(std::chrono::milliseconds timeout = 10ms)
+        + void schedule(coro::task<void>&& task)
+        + coro::task<void> schedule_after(std::chrono::milliseconds amount)
+        + coro::task<void> schedule_at(time_point time)
+        + coro::task<void> yield_for(std::chrono::milliseconds amount)
+        + coro::task<void> yield_until(time_point time)
+        + coro::task<poll_status> poll(fd_t fd, coro::poll_op op, std::chrono::milliseconds timeout = 0ms)
+        + void shutdown()
+        + void garbage_collect()
+        - void process_events_manual(std::chrono::milliseconds timeout)
+        - void process_events_dedicated_thread()
+        - void process_events_execute(std::chrono::milliseconds timeout)
+        - poll_status event_to_poll_status(uint32_t events)
+        - void process_scheduled_execute_inline()
+        - void process_event_execute(detail::poll_info* pi, poll_status status)
+        - void process_timeout_execute()
+        - timed_events::iterator add_timer_token(time_point tp, detail::poll_info& pi)
+        - void remove_timer_token(timed_events::iterator pos)
+        - void update_timeout(time_point now)
+    }
+    namespace detail {
+        class poll_info {
+            - fd_t m_fd
+            - poll_status m_poll_status
+            - std::atomic<bool> m_processed
+            - std::atomic<std::coroutine_handle<>> m_awaiting_coroutine
+            - std::optional<timed_events::iterator> m_timer_pos
+            + poll_info()
+            + void await_suspend(std::coroutine_handle<> awaiting_coroutine)
+            + poll_status await_resume()
+        }
+    }
+    io_scheduler +-- detail::poll_info
+    namespace net {
+        class socket {
+            - int m_fd
+            + socket(int fd)
+            + socket(const socket& other)
+            + socket(socket&& other)
+            + ~socket()
+            + auto operator=(const socket& other) -> socket&
+            + auto operator=(socket&& other) -> socket&
+            + auto native_handle() -> int&
+            + auto blocking(blocking_t block) -> bool
+            + auto shutdown(poll_op how) -> bool
+            + auto close() -> void
+            + auto is_valid() const -> bool
+        }
+    }
+    class ring_buffer<T, N> {
+        - std::array<T, N> m_buffer
+        - std::atomic<uint64_t> m_head
+        - std::atomic<uint64_t> m_tail
+        - semaphore m_free
+        - semaphore m_ready
+        + ring_buffer()
+        + auto produce(T&& t) -> coro::task<coro::rb::produce_result>
+        + auto consume() -> coro::task<std::optional<T>>
+        + auto empty() -> bool
+        + auto notify_waiters() -> void
+    }
+    semaphore +-- ring_buffer
+    class latch {
+        - std::atomic<uint64_t> m_counter
+        - event m_event
+        + latch(uint64_t count)
+        + auto await_suspend(std::coroutine_handle<> awaiting_coroutine) -> bool
+        + auto count_down(uint64_t n = 1) -> void
+        + auto remaining() const -> uint64_t
+    }
+    event +-- latch
+}
+namespace coro::net::dns {
+    class resolver<Executor> {
+        - std::shared_ptr<Executor> m_executor
+        - std::chrono::milliseconds m_timeout
+        + resolver(std::shared_ptr<Executor> executor, std::chrono::milliseconds timeout = 5000ms)
+        + auto host_by_name(coro::net::hostname hostname) -> coro::task<std::unique_ptr<coro::net::dns::result>>
+    }
+}
+namespace coro::net::tcp {
+    class server {
+        - std::shared_ptr<io_scheduler> m_io_scheduler
+        - options m_options
+        - coro::net::socket m_accept_socket
+        + server(std::shared_ptr<io_scheduler> scheduler, options opts = {})
+        + server(server&& other)
+        + auto operator=(server&& other) -> server&
+        + auto poll(std::chrono::milliseconds timeout = 0ms) -> coro::task<coro::poll_status>
+        + auto accept() -> coro::net::tcp::client
+    }
+    class client {
+        - std::shared_ptr<io_scheduler> m_io_scheduler
+        - options m_options
+        - coro::net::socket m_socket
+        - std::optional<coro::net::connect_status> m_connect_status
+        + client(std::shared_ptr<io_scheduler> scheduler, options opts = {})
+        + client(std::shared_ptr<io_scheduler> scheduler, net::socket socket, options opts)
+        + client(const client& other)
+        + client(client&& other)
+        + ~client()
+        + auto operator=(const client& other) -> client&
+        + auto operator=(client&& other) -> client&
+        + auto connect(std::chrono::milliseconds timeout = 30s) -> coro::task<connect_status>
+        + auto poll(coro::poll_op op, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<coro::poll_status>
+        + auto send(std::span<const char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::pair<coro::net::send_status, std::span<const char>>>
+        + auto recv(std::span<char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::pair<coro::net::recv_status, std::span<char>>>
+        + auto socket() -> coro::net::socket&
+    }
+}
+namespace coro::net::tls {
+    class server {
+        - std::shared_ptr<io_scheduler> m_io_scheduler
+        - std::shared_ptr<context> m_tls_ctx
+        - options m_options
+        - coro::net::socket m_accept_socket
+        + server(std::shared_ptr<io_scheduler> scheduler, std::shared_ptr<context> tls_ctx, options opts)
+        + server(server&& other)
+        + auto operator=(server&& other) -> server&
+        + auto poll(std::chrono::milliseconds timeout = 0ms) -> coro::task<coro::poll_status>
+        + auto accept(std::chrono::milliseconds timeout = 30s) -> coro::task<coro::net::tls::client>
+    }
+    class client {
+        - std::shared_ptr<io_scheduler> m_io_scheduler
+        - std::shared_ptr<context> m_tls_ctx
+        - options m_options
+        - coro::net::socket m_socket
+        - std::optional<connection_status> m_connect_status
+        - tls_info m_tls_info
+        + client(std::shared_ptr<io_scheduler> scheduler, std::shared_ptr<context> tls_ctx, options opts)
+        + client(
+            std::shared_ptr<io_scheduler> scheduler,
+            std::shared_ptr<context> tls_ctx,
+            net::socket socket,
+            options opts
+        )
+        + client(client&& other)
+        + ~client()
+        + auto operator=(client&& other) -> client&
+        + auto connect(std::chrono::milliseconds timeout = 30s) -> coro::task<connection_status>
+        + auto poll(coro::poll_op op, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<coro::poll_status>
+        + auto send(std::span<const char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::pair<coro::net::tls::send_status, std::span<const char>>>
+        + auto recv(std::span<char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::pair<coro::net::tls::recv_status, std::span<char>>>
+        + auto socket() -> coro::net::socket&
+        - auto handshake(std::chrono::milliseconds timeout) -> coro::task<connection_status>
+        - static auto tls_shutdown_and_free(
+            std::shared_ptr<io_scheduler> io_scheduler,
+            net::socket s,
+            tls_unique_ptr tls_ptr,
+            std::chrono::milliseconds timeout
+        ) -> coro::task<void>
+    }
+    class context {
+        - SSL_CTX* m_ssl_ctx
+        + context(verify_peer_t verify_peer = verify_peer_t::no)
+        + context(
+            std::filesystem::path certificate,
+            tls_file_type certificate_type,
+            std::filesystem::path private_key,
+            tls_file_type private_key_type,
+            verify_peer_t verify_peer = verify_peer_t::no
+        )
+        + ~context()
+        + auto native_handle() const -> SSL_CTX*
+    }
+}
+namespace coro::net::udp {
+    class peer {
+        - std::shared_ptr<io_scheduler> m_io_scheduler
+        - coro::net::socket m_socket
+        - std::optional<bool> m_bound
+        + peer(std::shared_ptr<io_scheduler> scheduler, net::domain_t domain)
+        + peer(std::shared_ptr<io_scheduler> scheduler, const info& bind_info)
+        + auto poll(coro::poll_op op, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<coro::poll_status>
+        + auto sendto(const info& peer, std::span<const char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::pair<coro::net::send_status, std::span<const char>>>
+        + auto recvfrom(std::span<char> buffer, std::chrono::milliseconds timeout = 0ms)
+                   -> coro::task<std::tuple<coro::net::recv_status, info, std::span<char>>>
+        + auto socket() -> coro::net::socket&
+        + auto is_bound() -> bool
+    }
+}
+@enduml
