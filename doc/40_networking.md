@@ -25,7 +25,6 @@ These asynchronous operations allow your coroutines to suspend while waiting for
 
 Subsequent sections will delve deeper into specific networking protocols like TCP and UDP, demonstrating how to build robust client and server applications using libcoro's powerful asynchronous networking capabilities.
 
-## 4. Networking
 
 ### 4.2 TCP
 
@@ -109,3 +108,146 @@ auto make_client_task = [](std::shared_ptr<coro::io_scheduler> scheduler) -> cor
 ```
 
 These TCP components, combined with libcoro's other features, provide a powerful foundation for building diverse and efficient asynchronous TCP-based applications in C++.
+
+
+### 4.3 UDP
+
+libcoro facilitates asynchronous UDP communication through the `coro::net::udp::peer` class. This class allows building UDP-based applications that leverage the advantages of coroutines for non-blocking I/O operations.
+
+#### 4.3.1 `coro::net::udp::peer`
+
+The `coro::net::udp::peer` class encapsulates a UDP socket and provides methods for sending and receiving datagrams. It seamlessly integrates with a `coro::io_scheduler` for asynchronous event handling.
+
+**Key features:**
+
+- **Constructors:**
+    - Accepts a `coro::io_scheduler` instance for managing network events.
+    - Offers two constructor overloads:
+        - One taking a `coro::net::domain_t` to specify the desired network domain (IPv4 or IPv6). This constructor creates an unbound socket, allowing you to send datagrams to any destination.
+        - Another taking a `coro::net::udp::peer::info` structure, which specifies both the network domain and the address/port for binding the socket. This allows receiving datagrams from specific sources.
+- **`poll()`:**  Awaits a specific I/O event (read or write), suspending the coroutine until the event occurs. Takes a `coro::poll_op` to specify the desired event and an optional timeout. Returns a `coro::poll_status` indicating the result of the polling operation.
+- **`sendto()`:** Asynchronously sends a datagram to a specific peer. Takes a `coro::net::udp::peer::info` structure identifying the destination peer, a `std::span<const char>` containing the data to send, and an optional timeout. Returns a pair containing a `coro::net::send_status` and a `std::span<const char>` representing any remaining data that couldn't be sent immediately.
+- **`recvfrom()`:** Asynchronously receives a datagram from a peer. Takes a `std::span<char>` to store the received data and an optional timeout. Returns a tuple containing a `coro::net::recv_status`, a `coro::net::udp::peer::info` structure identifying the sending peer, and a `std::span<char>` representing the received data.
+- **`is_bound()`:** Indicates whether the socket is bound to a specific address and port.
+
+**Example usage:**
+
+```cpp
+auto make_receiver_task = [](std::shared_ptr<coro::io_scheduler> scheduler) -> coro::task<void> {
+    co_await scheduler->schedule();
+    coro::net::udp::peer::info bind_info{
+        .address = coro::net::ip_address::from_string("0.0.0.0"),
+        .port = 9999
+    };
+    coro::net::udp::peer receiver{scheduler, bind_info};
+
+    while (true) {
+        auto pstatus = co_await receiver.poll(coro::poll_op::read);
+        if (pstatus == coro::poll_status::event) {
+            std::string buffer(256, '\0');
+            auto [rstatus, sender_info, data] = receiver.recvfrom(buffer);
+            // Handle the received datagram.
+            // ...
+        } 
+        // Handle other poll status...
+    }
+    co_return;
+};
+
+auto make_sender_task = [](std::shared_ptr<coro::io_scheduler> scheduler) -> coro::task<void> {
+    co_await scheduler->schedule();
+    coro::net::udp::peer sender{scheduler, coro::net::domain_t::ipv4};
+    coro::net::udp::peer::info receiver_info{
+        .address = coro::net::ip_address::from_string("127.0.0.1"),
+        .port = 9999
+    };
+
+    auto [send_status, remaining] = co_await sender.sendto(receiver_info, "Hello from sender!");
+    // ...
+    co_return;
+};
+```
+
+The `coro::net::udp::peer` class, along with libcoro's asynchronous capabilities, offers a powerful framework for creating responsive and efficient UDP applications in C++.
+
+
+
+### 4.4 TLS/SSL (optional)
+
+libcoro provides optional support for secure communication over TCP using TLS/SSL, available by enabling the `LIBCORO_FEATURE_TLS` compile-time feature. This functionality resides within the `coro::net::tls` namespace and revolves around the `coro::net::tls::context` class.
+
+#### 4.4.1 `coro::net::tls::context`
+
+The `coro::net::tls::context` class encapsulates an OpenSSL context, representing the configuration for a TLS/SSL connection. It allows you to load certificates, private keys, and set various security options.
+
+**Key features:**
+
+- **Constructors:**
+    - Takes a `verify_peer_t` enum value to control peer certificate verification (defaults to `verify_peer_t::no`).
+    - Alternatively, a constructor accepting paths to certificate and private key files, along with their file types (PEM or DER), is available for server-side configurations. This constructor also takes the `verify_peer_t` parameter.
+- **`native_handle()`:** Returns the underlying `SSL_CTX` pointer, which can be used for advanced OpenSSL operations if needed.
+
+**Example usage:**
+
+```cpp
+// Client-side context with peer verification disabled.
+auto client_ctx = std::make_shared<coro::net::tls::context>(coro::net::tls::verify_peer_t::no);
+
+// Server-side context loading certificate and private key.
+auto server_ctx = std::make_shared<coro::net::tls::context>("cert.pem", coro::net::tls::tls_file_type::pem,
+                                                          "key.pem", coro::net::tls::tls_file_type::pem);
+```
+
+#### 4.4.2 `coro::net::tls::server`
+
+The `coro::net::tls::server` class builds upon the `coro::net::tcp::server` to provide a TLS/SSL-enabled TCP server. It requires a `coro::net::tls::context` for configuring the secure connection.
+
+**Key features:**
+
+- **Constructor:**
+    - Takes a `coro::io_scheduler` instance to manage network events.
+    - Requires a `coro::net::tls::context` for TLS/SSL configuration.
+    - Accepts an `options` structure similar to `coro::net::tcp::server` to configure binding address, port, and backlog.
+- **`poll()`:** Inherits from `coro::net::tcp::server` and behaves the same, awaiting a new connection event.
+- **`accept()`:** Accepts an incoming TLS/SSL connection. It performs the TLS/SSL handshake and returns a `coro::net::tls::client` representing the secured connection.
+
+#### 4.4.3 `coro::net::tls::client`
+
+The `coro::net::tls::client` class extends the `coro::net::tcp::client` to enable secure communication with TLS/SSL servers. It requires a `coro::net::tls::context` to establish a secure connection.
+
+**Key features:**
+
+- **Constructors:**
+    - Similar to `coro::net::tcp::client`, it takes a `coro::io_scheduler` and a `coro::net::tls::context`.
+    - Provides an additional constructor that accepts an existing `coro::net::socket` for accepting connections from a `coro::net::tls::server`.
+- **`connect()`:** Establishes a secure connection to a TLS/SSL server, performing the necessary handshake. Returns a `coro::net::tls::connection_status` indicating the outcome.
+- **`poll()`, `send()`, `recv()`:** Inherit from `coro::net::tcp::client` and operate over the secured connection.
+
+**Example usage:**
+
+```cpp
+// Server task
+auto make_tls_server_task = [&]() -> coro::task<void> {
+    co_await scheduler->schedule();
+    coro::net::tls::server server{scheduler, server_ctx, 
+                                    coro::net::tls::server::options{.port = 8443}};
+    // ... accept connections and handle them ...
+};
+
+// Client task
+auto make_tls_client_task = [&]() -> coro::task<void> {
+    co_await scheduler->schedule();
+    coro::net::tls::client client{scheduler, client_ctx,
+                                    coro::net::tls::client::options{
+                                        .address = coro::net::ip_address::from_string("127.0.0.1"),
+                                        .port = 8443
+                                    }};
+    auto status = co_await client.connect();
+    if (status == coro::net::tls::connection_status::connected) {
+        // ... communicate securely ...
+    }
+};
+```
+
+libcoro's TLS/SSL support, combined with its asynchronous capabilities, empowers you to build secure and efficient network applications in C++.
+
